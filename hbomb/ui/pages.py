@@ -1,1 +1,1 @@
-/tmp/pages_complete.py
+@file:///tmp/pages_complete.py
