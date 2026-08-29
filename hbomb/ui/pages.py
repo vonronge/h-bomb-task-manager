@@ -1523,4 +1523,230 @@ class ColorsPanel(QWidget):
         self.ambiance = QComboBox()
         self.ambiance.addItems([label for _key, label in AMBIANCE_CHOICES])
         self.ambiance.setCurrentIndex(ambiance_index(visual.chrome))
-        self.sat = 
+        self.sat = QSlider(Qt.Orientation.Horizontal)
+        self.sat.setRange(0, 11)
+        self.sat.setValue(int(round(visual.saturation * 11)))
+        self._sat_lbl = QLabel(f"{self.sat.value()} / 11")
+        sat_row = QHBoxLayout()
+        sat_row.addWidget(self.sat, 1)
+        sat_row.addWidget(self._sat_lbl)
+        self.bloom = QCheckBox("Visual bloom")
+        self.bloom.setChecked(visual.bloom)
+        self.brightness = QSlider(Qt.Orientation.Horizontal)
+        self.brightness.setRange(50, 150)
+        self.brightness.setValue(int(round(visual.brightness * 100)))
+        self._bright_lbl = QLabel(f"{self.brightness.value()}%")
+        bright_row = QHBoxLayout()
+        bright_row.addWidget(self.brightness, 1)
+        bright_row.addWidget(self._bright_lbl)
+        self.contrast = QSlider(Qt.Orientation.Horizontal)
+        self.contrast.setRange(50, 150)
+        self.contrast.setValue(int(round(visual.contrast * 100)))
+        self._contrast_lbl = QLabel(f"{self.contrast.value()}%")
+        contrast_row = QHBoxLayout()
+        contrast_row.addWidget(self.contrast, 1)
+        contrast_row.addWidget(self._contrast_lbl)
+        lay.addWidget(_SettingsRow("Display", self.display))
+        lay.addWidget(_SettingsRow("Ambiance", self.ambiance))
+        lay.addLayout(sat_row)
+        lay.addWidget(QLabel("Saturation"))
+        lay.addWidget(QLabel("Brightness"))
+        lay.addLayout(bright_row)
+        lay.addWidget(QLabel("Contrast"))
+        lay.addLayout(contrast_row)
+        lay.addWidget(self.bloom)
+        self.display.currentIndexChanged.connect(self._apply)
+        self.ambiance.currentIndexChanged.connect(self._apply)
+        self.sat.valueChanged.connect(self._on_sat)
+        self.brightness.valueChanged.connect(self._on_brightness)
+        self.contrast.valueChanged.connect(self._on_contrast)
+        self.bloom.toggled.connect(self._apply)
+
+    def _on_brightness(self, v: int) -> None:
+        self._bright_lbl.setText(f"{v}%")
+        self._apply()
+
+    def _on_contrast(self, v: int) -> None:
+        self._contrast_lbl.setText(f"{v}%")
+        self._apply()
+
+    def _on_sat(self, v: int) -> None:
+        self._sat_lbl.setText(f"{v} / 11")
+        self._apply()
+
+    def sync_from_visual(self) -> None:
+        mode_map = {"full": 0, "green": 1, "amber": 2, "white": 3, "blue": 4, "mono": 5}
+        self.display.blockSignals(True)
+        self.display.setCurrentIndex(mode_map.get(self.visual.color_mode, 0))
+        self.display.blockSignals(False)
+        self.ambiance.blockSignals(True)
+        self.ambiance.setCurrentIndex(ambiance_index(self.visual.chrome))
+        self.ambiance.blockSignals(False)
+        self.sat.blockSignals(True)
+        self.sat.setValue(int(round(self.visual.saturation * 11)))
+        self.sat.blockSignals(False)
+        self._sat_lbl.setText(f"{self.sat.value()} / 11")
+        self.brightness.blockSignals(True)
+        self.brightness.setValue(int(round(self.visual.brightness * 100)))
+        self.brightness.blockSignals(False)
+        self._bright_lbl.setText(f"{self.brightness.value()}%")
+        self.contrast.blockSignals(True)
+        self.contrast.setValue(int(round(self.visual.contrast * 100)))
+        self.contrast.blockSignals(False)
+        self._contrast_lbl.setText(f"{self.contrast.value()}%")
+        self.bloom.setChecked(self.visual.bloom)
+
+    def _apply(self, *_a) -> None:
+        modes = ["full", "green", "amber", "white", "blue", "mono"]
+        self.visual.color_mode = modes[self.display.currentIndex()]
+        self.visual.chrome = ambiance_id(self.ambiance.currentIndex())
+        self.visual.saturation = self.sat.value() / 11.0
+        self.visual.brightness = self.brightness.value() / 100.0
+        self.visual.contrast = self.contrast.value() / 100.0
+        self.visual.bloom = self.bloom.isChecked()
+        self.changed.emit()
+
+
+class ColorsPage(QWidget):
+    """Deprecated — colors live in SettingsPage. Kept for compatibility."""
+
+    changed = Signal()
+
+    def __init__(self, visual: VisualState, parent=None) -> None:
+        super().__init__(parent)
+        self.panel = ColorsPanel(visual, popup=False, embedded=True)
+        self.panel.changed.connect(self.changed.emit)
+
+
+class SettingsPage(QWidget):
+    changed = Signal()
+
+    _START_PAGES = [
+        ("summary", "Overview"),
+        ("performance", "Performance"),
+        ("processes", "Running Apps"),
+        ("sysinfo", "Hardware"),
+        ("power", "Power & Clocks"),
+        ("benchmarks", "Speed Tests"),
+    ]
+
+    def __init__(self, visual: VisualState, flags: FeatureFlags, parent=None) -> None:
+        super().__init__(parent)
+        self.visual = visual
+        self.flags = flags
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(8, 4, 8, 12)
+        lay.setSpacing(12)
+
+        appear = _SettingsCard("Appearance", "colors")
+        self.theme_box = QComboBox()
+        self.theme_box.addItems(["Dark", "Light", "Follow system"])
+        appear_map = {"dark": 0, "light": 1, "follow": 2}
+        self.theme_box.setCurrentIndex(appear_map.get(visual.appearance, 0))
+        self.font_box = QComboBox()
+        self.font_box.addItems(["IBM Plex Sans", "Selawik", "Noto Sans", "System Default"])
+        idx = max(0, self.font_box.findText(visual.app_font))
+        self.font_box.setCurrentIndex(idx)
+        self.high_freq = QCheckBox("High frequency visuals")
+        self.high_freq.setChecked(visual.high_freq_visuals)
+        appear.body.addWidget(_SettingsRow("App theme", self.theme_box))
+        appear.body.addWidget(_SettingsRow("Application font", self.font_box))
+        appear.body.addWidget(self.high_freq)
+        hf_hint = QLabel(
+            "Smooth graph motion and gauge needles between data updates. Turn off to redraw only "
+            "when new data arrives, minimizing CPU use."
+        )
+        hf_hint.setObjectName("settingsHint")
+        hf_hint.setWordWrap(True)
+        appear.body.addWidget(hf_hint)
+        self.colors_panel = ColorsPanel(visual, popup=False, embedded=True)
+        appear.body.addWidget(self.colors_panel)
+        lay.addWidget(appear)
+
+        graphs = _SettingsCard("Graphs & updates", "performance")
+        self.speed = QComboBox()
+        self.speed.addItems(["Slow — 1/sec", "Normal — 2/sec", "Fast — 4/sec"])
+        speed_map = {"slow": 0, "normal": 1, "fast": 2}
+        self.speed.setCurrentIndex(speed_map.get(visual.update_speed, 1))
+        self.color_keyed = QCheckBox("Color keyed graphs")
+        self.color_keyed.setChecked(visual.color_keyed_graphs)
+        self.compress = QCheckBox("Compress older history")
+        self.compress.setChecked(visual.compress_history)
+        self.hist_mult = QSpinBox()
+        self.hist_mult.setRange(1, 30)
+        self.hist_mult.setSuffix("x")
+        self.hist_mult.setValue(visual.history_multiplier)
+        self.px_update = QSpinBox()
+        self.px_update.setRange(1, 32)
+        self.px_update.setValue(visual.pixels_per_update)
+        graphs.body.addWidget(_SettingsRow("Real-time update speed", self.speed))
+        graphs.body.addWidget(self.color_keyed)
+        graphs.body.addWidget(self.compress)
+        graphs.body.addWidget(
+            _SettingsRow(
+                "History multiplier",
+                self.hist_mult,
+                "Older time is compressed smoothly. At 15x, four equal-width regions contain "
+                "1x, 2x, 4x, and 8x history; the live quarter tracks the grid 1:1.",
+            )
+        )
+        graphs.body.addWidget(
+            _SettingsRow(
+                "Pixels per update",
+                self.px_update,
+                "Each data update advances the graph by this many pixels; motion is presented in "
+                "whole-pixel steps between updates.",
+            )
+        )
+        lay.addWidget(graphs)
+
+        general = _SettingsCard("General", "settings")
+        self.popout = QComboBox()
+        self.popout.addItems(["Off", "On"])
+        self.popout.setCurrentIndex(0 if visual.popout == "off" else 1)
+        self.start_page = QComboBox()
+        for _k, label in self._START_PAGES:
+            self.start_page.addItem(label)
+        for i, (k, _l) in enumerate(self._START_PAGES):
+            if k == visual.start_page:
+                self.start_page.setCurrentIndex(i)
+                break
+        self.show_reports = QCheckBox("Show Task Manager in reports")
+        self.show_reports.setChecked(visual.show_in_reports)
+        self.include_self = QCheckBox("Show H-Bomb in process lists")
+        self.include_self.setChecked(visual.include_self)
+        self.always_top = QCheckBox("Always on top")
+        self.always_top.setChecked(visual.always_on_top)
+        general.body.addWidget(_SettingsRow("Popout", self.popout))
+        general.body.addWidget(_SettingsRow("Default start page", self.start_page))
+        general.body.addWidget(self.include_self)
+        general.body.addWidget(self.show_reports)
+        general.body.addWidget(self.always_top)
+        top_hint = QLabel(
+            "Keeps the window above other applications. On Linux, some desktop environments "
+            "may ignore this for tiled or fullscreen layouts."
+        )
+        top_hint.setObjectName("settingsHint")
+        top_hint.setWordWrap(True)
+        general.body.addWidget(top_hint)
+        lay.addWidget(general)
+
+        about = _SettingsCard("About", "sysinfo")
+        about.body.addWidget(QLabel("H-Bomb Task Manager"))
+        ver = QLabel("0.1.0 — Native Qt6")
+        ver.setObjectName("muted")
+        about.body.addWidget(ver)
+        copy = QLabel("Copyright © 2026 H-Bomb Task Manager")
+        copy.setObjectName("muted")
+        about.body.addWidget(copy)
+        lay.addWidget(about)
+        lay.addStretch()
+        scroll.setWidget(inner)
+        root.addWidget(scroll)
+   
