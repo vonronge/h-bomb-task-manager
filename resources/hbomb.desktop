@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=H-Bomb Task Manager
+Comment=System monitor for Kubuntu
+Exec=hbomb
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+StartupWMClass=H-Bomb
