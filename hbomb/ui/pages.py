@@ -751,4 +751,241 @@ class TelemetryPage(QWidget):
             batt = "" if snap.energy.battery_pct is None else f"  battery {snap.energy.battery_pct:.0f}%"
             self.body.setText(
                 f"{'Power unavailable' if w is None else f'{w:.1f} W'}  "
-                f"governor {snap.
+                f"governor {snap.energy.governor}  state {snap.energy.power_state}{batt}\n"
+                "Per-process energy is n/a on this kernel unless a future helper fills it."
+            )
+            self.table.setRowCount(0)
+        elif self.kind == "thermals":
+            if h and t:
+                self.chart.set_series([("Hotspot", h.get("temp_c"), t.temp)])
+            lines = [f"Hotspot {snap.thermals.hotspot_c:.1f} °C  (orange signal path)"]
+            self.table.setColumnCount(3)
+            self.table.setHorizontalHeaderLabels(["Sensor", "°C", "Kind"])
+            self.table.setRowCount(len(snap.thermals.sensors))
+            for i, s in enumerate(snap.thermals.sensors):
+                for c, v in enumerate([s.name, f"{s.temp_c:.1f}", s.kind]):
+                    self.table.setItem(i, c, QTableWidgetItem(v))
+            self.body.setText("\n".join(lines))
+        elif self.kind == "gpu":
+            self.chart.fixed_max = 100.0
+            if h and t:
+                vram_col = t.danger
+                self.chart.set_series(
+                    [
+                        ("GPU %", h.get("gpu_util_pct"), t.gpu, 100.0, "left", True),
+                        ("VRAM %", h.get("gpu_vram_pct"), vram_col, 100.0, "left", False),
+                    ]
+                )
+            g = snap.gpu
+            npu = snap.npu
+            npu_txt = f"{npu.util * 100:.0f}%" if npu.available else "not published"
+            self.body.setText(
+                f"{g.name or 'GPU unavailable'}  {g.util * 100:.1f}%  "
+                f"VRAM {bytes_h(g.vram_used)} / {bytes_h(g.vram_total)}  "
+                f"{g.temp_c:.0f}°C  {g.clock_mhz:.0f} MHz\nNPU: {npu_txt}"
+            )
+            self.table.setRowCount(0)
+
+
+class PowerFreqPage(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.theme: Theme | None = None
+        self.visual = VisualState()
+        self._mins: dict[str, float] = {}
+        self._maxs: dict[str, float] = {}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 4, 8, 8)
+        self.chart_slot = QFrame()
+        self.chart_slot.setObjectName("card")
+        self.chart_slot.setMinimumHeight(72)
+        self.chart_slot.setMaximumHeight(72)
+        lay.addWidget(self.chart_slot)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Sensor", "Value", "Min", "Max"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setUniformRowHeights(True)
+        lay.addWidget(self.tree, 1)
+
+    def _track(self, key: str, value: float) -> tuple[float, float, float]:
+        if key not in self._mins:
+            self._mins[key] = value
+            self._maxs[key] = value
+        else:
+            self._mins[key] = min(self._mins[key], value)
+            self._maxs[key] = max(self._maxs[key], value)
+        return value, self._mins[key], self._maxs[key]
+
+    def _row(self, parent: QTreeWidgetItem | QTreeWidget, name: str, value: str, vmin: str = "", vmax: str = "") -> QTreeWidgetItem:
+        item = QTreeWidgetItem([name, value, vmin, vmax])
+        if isinstance(parent, QTreeWidget):
+            parent.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+        return item
+
+    def update_snapshot(self, snap: Snapshot) -> None:
+        self.tree.clear()
+        root = self._row(self.tree, "This PC", "", "", "")
+        cpu_name = snap.cpu.model_name or f"{snap.cpu.physical_cores or len(snap.cpu.cores)}-Core Processor"
+        proc = self._row(root, cpu_name, "", "", "")
+        proc.setExpanded(True)
+        clocks = self._row(proc, "Clocks", "", "", "")
+        clocks.setExpanded(True)
+        avg = snap.cpu.freq_ghz
+        _v, mn, mx = self._track("cpu.avg_ghz", avg)
+        self._row(clocks, "Average effective", f"{avg:.2f} GHz", f"{mn:.2f} GHz", f"{mx:.2f} GHz")
+        for core in snap.cpu.cores[: min(8, len(snap.cpu.cores))]:
+            key = f"cpu.core{core.index}"
+            _v, mn, mx = self._track(key, core.freq_ghz)
+            self._row(clocks, f"Core {core.index}", f"{core.freq_ghz:.2f} GHz", f"{mn:.2f} GHz", f"{mx:.2f} GHz")
+        temps = self._row(proc, "Temperatures", "", "", "")
+        hot = snap.thermals.hotspot_c
+        _v, mn, mx = self._track("cpu.temp", hot)
+        self._row(temps, "Package", f"{hot:.0f} °C", f"{mn:.0f} °C", f"{mx:.0f} °C")
+        for sensor in snap.thermals.sensors[:4]:
+            key = f"temp.{sensor.name}"
+            _v, mn, mx = self._track(key, sensor.temp_c)
+            self._row(temps, sensor.name, f"{sensor.temp_c:.0f} °C", f"{mn:.0f} °C", f"{mx:.0f} °C")
+        powers = self._row(proc, "Powers", "", "", "")
+        w = snap.energy.watts
+        if w is not None:
+            _v, mn, mx = self._track("cpu.power", w)
+            self._row(powers, "Package", f"{w:.1f} W", f"{mn:.1f} W", f"{mx:.1f} W")
+        else:
+            self._row(powers, "Package", "—", "—", "—")
+        if snap.gpu.available and snap.gpu.name:
+            gpu = self._row(root, "Discrete GPU", "", "", "")
+            ghz = snap.gpu.clock_mhz / 1000.0 if snap.gpu.clock_mhz else 0.0
+            _v, mn, mx = self._track("gpu.clock", ghz)
+            self._row(gpu, snap.gpu.name, f"{ghz:.2f} GHz", f"{mn:.2f} GHz", f"{mx:.2f} GHz")
+        mem = self._row(root, "System Memory", "", "", "")
+        used_gib = snap.memory.occupied_bytes / (1024**3)
+        _v, mn, mx = self._track("mem.used_gib", used_gib)
+        self._row(mem, "In use", f"{used_gib:.1f} GiB", f"{mn:.1f} GiB", f"{mx:.1f} GiB")
+        for dev in snap.disk.devices[:3]:
+            disk = self._row(root, dev.name or "NVMe SSD", "", "", "")
+            busy = dev.busy * 100.0
+            _v, mn, mx = self._track(f"disk.{dev.name}.busy", busy)
+            self._row(disk, "Activity", f"{busy:.1f}%", f"{mn:.1f}%", f"{mx:.1f}%")
+        root.setExpanded(True)
+
+
+class SimpleTablePage(QWidget):
+    def __init__(self, title: str, headers: list[str], loader, parent=None) -> None:
+        super().__init__(parent)
+        self.loader = loader
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        lab = QLabel(title)
+        lab.setStyleSheet("font-size: 22px; font-weight: 600;")
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.reload)
+        row.addWidget(lab)
+        row.addStretch()
+        row.addWidget(refresh)
+        lay.addLayout(row)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        self.table = QTableWidget(0, len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(self.table, 1)
+        extra = QHBoxLayout()
+        self.extra_layout = extra
+        lay.addLayout(extra)
+        self._loaded = False
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        if not self._loaded:
+            self._loaded = True
+            self.reload()
+
+    def reload(self) -> None:
+        try:
+            rows = self.loader()
+        except Exception as exc:
+            self.note.setText(str(exc))
+            return
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for c, v in enumerate(row):
+                self.table.setItem(i, c, QTableWidgetItem(str(v)))
+
+
+MORE_NAV = [
+    ("startup", "Login Items"),
+    ("users", "Accounts"),
+    ("services", "System Services"),
+    ("connections", "Open Connections"),
+    ("power", "Power & Clocks"),
+    ("benchmarks", "Speed Tests"),
+    ("apps", "Installed Software"),
+]
+
+MORE_FLAG_MAP = {
+    "connections": "connections",
+    "power": "power_freq",
+    "apps": "installed_apps",
+    "benchmarks": "benchmarks",
+}
+
+
+class MoreHubPage(QWidget):
+    section_changed = Signal(str, str)
+
+    def __init__(
+        self,
+        sections: list[tuple[str, str, QWidget]],
+        flags: FeatureFlags,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.rail = QListWidget()
+        self.rail.setObjectName("nav")
+        self.rail.setFixedWidth(200)
+        self.stack = QStackedWidget()
+        self._keys: list[str] = []
+        self._labels: list[str] = []
+        rail_font = QFont(self.font().family(), 10, QFont.Weight.Medium)
+        fm = QFontMetrics(rail_font)
+        for key, label, page in sections:
+            if key in MORE_FLAG_MAP and not flags.enabled(MORE_FLAG_MAP[key]):
+                continue
+            item = QListWidgetItem(label)
+            item.setFont(rail_font)
+            item.setSizeHint(QSize(max(180, fm.horizontalAdvance(label) + 24), 32))
+            self.rail.addItem(item)
+            self.stack.addWidget(page)
+            self._keys.append(key)
+            self._labels.append(label)
+        self.rail.currentRowChanged.connect(self._on_row)
+        lay.addWidget(self.rail)
+        lay.addWidget(self.stack, 1)
+        if self._keys:
+            self.rail.setCurrentRow(0)
+
+    def _on_row(self, row: int) -> None:
+        if 0 <= row < len(self._keys):
+            self.stack.setCurrentIndex(row)
+            self.section_changed.emit(self._keys[row], self.rail.item(row).text())
+
+    def select(self, key: str) -> None:
+        if key in self._keys:
+            self.rail.setCurrentRow(self._keys.index(key))
+
+    def current_key(self) -> str:
+        row = self.rail.currentRow()
+        if 0 <= row < len(self._keys):
+            return self._keys[row]
+        return self._keys[0] if self._keys else
