@@ -1749,4 +1749,120 @@ class SettingsPage(QWidget):
         lay.addStretch()
         scroll.setWidget(inner)
         root.addWidget(scroll)
-   
+        self._cards = (appear, graphs, general, about)
+
+        for w in (
+            self.theme_box,
+            self.font_box,
+            self.popout,
+            self.speed,
+            self.start_page,
+        ):
+            w.currentIndexChanged.connect(self._apply)
+        for w in (self.high_freq, self.color_keyed, self.compress, self.show_reports, self.include_self, self.always_top):
+            w.toggled.connect(self._apply)
+        for w in (self.hist_mult, self.px_update):
+            w.valueChanged.connect(self._apply)
+        self.colors_panel.changed.connect(self._apply)
+
+    def apply_theme(self, theme: Theme, visual: VisualState) -> None:
+        for card in self._cards:
+            card.apply_theme(theme)
+
+    def _apply(self, *_a) -> None:
+        appear_map = {0: "dark", 1: "light", 2: "follow"}
+        self.visual.appearance = appear_map[self.theme_box.currentIndex()]
+        self.visual.app_font = self.font_box.currentText()
+        self.visual.popout = "off" if self.popout.currentIndex() == 0 else "on"
+        self.visual.high_freq_visuals = self.high_freq.isChecked()
+        self.visual.color_keyed_graphs = self.color_keyed.isChecked()
+        self.visual.compress_history = self.compress.isChecked()
+        self.visual.history_multiplier = self.hist_mult.value()
+        self.visual.pixels_per_update = self.px_update.value()
+        speed_map = {0: "slow", 1: "normal", 2: "fast"}
+        self.visual.update_speed = speed_map[self.speed.currentIndex()]
+        self.visual.start_page = self._START_PAGES[self.start_page.currentIndex()][0]
+        self.visual.show_in_reports = self.show_reports.isChecked()
+        self.visual.include_self = self.include_self.isChecked()
+        self.visual.always_on_top = self.always_top.isChecked()
+        self.changed.emit()
+
+
+def make_inventory_pages() -> dict[str, QWidget]:
+    def units():
+        rows = []
+        for u in list_user_units() + list_system_units_readonly():
+            rows.append((u.name, u.description, u.active, u.enabled, "user" if u.user_unit else "system"))
+        return rows
+
+    services = SimpleTablePage(
+        "Services",
+        ["Name", "Description", "Active", "Load", "Scope"],
+        units,
+    )
+    services.note.setText("User-mode: listing only for system units. Start/stop of system units needs root/polkit and is not persisted here.")
+
+    def starts():
+        return [(a.name, a.command, "on" if a.enabled else "off", a.path) for a in list_autostart()]
+
+    startup = SimpleTablePage("Startup apps", ["Name", "Command", "Enabled", "Path"], starts)
+    startup.note.setText("Toggle only works for files in ~/.config/autostart.")
+    tog = QPushButton("Toggle selected (user files)")
+
+    def do_toggle() -> None:
+        items = startup.table.selectedItems()
+        if not items:
+            return
+        row = startup.table.currentRow()
+        path = startup.table.item(row, 3).text()
+        enabled = startup.table.item(row, 2).text() != "on"
+        if toggle_autostart(path, enabled):
+            startup.reload()
+        else:
+            QMessageBox.information(startup, "Startup", "Only user autostart files can be toggled.")
+
+    tog.clicked.connect(do_toggle)
+    startup.extra_layout.addWidget(tog)
+
+    def users():
+        return [(s.user, s.uid, s.session, s.seat, s.state) for s in list_sessions()]
+
+    users_p = SimpleTablePage("Users", ["User", "UID", "Session", "Seat", "State"], users)
+
+    def info():
+        return hardware_tree()
+
+    sysinfo = SimpleTablePage("System Info", ["Key", "Value"], info)
+
+    def apps():
+        return [(a.name, a.version, a.source, a.desktop) for a in list_installed_apps()]
+
+    apps_p = SimpleTablePage("Installed Apps", ["Name", "Version", "Source", "Desktop"], apps)
+    apps_p.note.setText("Uninstall is not performed here (no root package nuking).")
+
+    def mounts():
+        return list_mounts()
+
+    mounts_p = SimpleTablePage("Mounts", ["Mount", "Source", "Type", "Usage"], mounts)
+
+    journal = QWidget()
+    jl = QVBoxLayout(journal)
+    jl.addWidget(QLabel("Journal"))
+    text = QTextEdit()
+    text.setReadOnly(True)
+    btn = QPushButton("Reload")
+    def loadj():
+        text.setPlainText("\n".join(journal_tail()))
+    btn.clicked.connect(loadj)
+    jl.addWidget(btn)
+    jl.addWidget(text, 1)
+
+    return {
+        "services": services,
+        "startup": startup,
+        "users": users_p,
+        "sysinfo": sysinfo,
+        "apps": apps_p,
+        "mounts": mounts_p,
+        "journal": journal,
+    }
