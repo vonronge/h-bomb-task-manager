@@ -1,1 +1,1 @@
-LOAD_FROM_TMP_mcp_args_only
+LOAD_FROM_/tmp/_mcp_call.json
