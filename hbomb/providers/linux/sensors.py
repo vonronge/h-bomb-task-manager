@@ -34,14 +34,17 @@ def _rapl_watts() -> float | None:
         return None
     for name in names:
         if not name.startswith("intel-rapl") and not name.startswith("amd-"):
+            # AMD uses intel-rapl:* on many kernels too
             if "rapl" not in name:
                 continue
         path = os.path.join(base, name, "energy_uj")
+        # only package-level (no :core nested double-count): name like intel-rapl:0
         if ":" in name and name.count(":") > 1:
             continue
         if name.endswith(":0") or name == "intel-rapl:0" or ":0" in name and name.count(":") == 1:
             pass
         elif name.count(":") >= 1 and not name.endswith(":0"):
+            # skip intel-rapl:0:0 cores
             if name.count(":") > 1:
                 continue
         try:
@@ -60,6 +63,7 @@ def _rapl_watts() -> float | None:
             continue
         total += (du / 1_000_000.0) / dt
         found = True
+    # Prefer the first package only if we summed duplicates
     if not found:
         return None
     return total if total > 0 else None
