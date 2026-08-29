@@ -1256,4 +1256,271 @@ class BenchmarksPage(QWidget):
             self.g1.max_value = 1000
             self.g2.setVisible(False)
         else:
-            sel
+            self.g1.title = "SYSTEM"
+            self.g1.unit = "score"
+            self.g1.max_value = 1000
+            self.g2.setVisible(True)
+            self.g2.title = "DETAIL"
+            self.g2.unit = "Gop/sec"
+            self.g2.max_value = 8
+        self.g1.update()
+        self.g2.update()
+
+    def _clear_history(self) -> None:
+        self._history.clear()
+        self._refresh_table()
+
+    def _refresh_table(self) -> None:
+        self.table.setRowCount(len(self._history))
+        self._empty.setVisible(len(self._history) == 0)
+        for i, row in enumerate(self._history):
+            for c, v in enumerate(row):
+                text = f"{v:.1f}" if isinstance(v, float) else str(v)
+                self.table.setItem(i, c, QTableWidgetItem(text))
+        if self._history and self.sidebar.currentRow() == 0:
+            _date, single, multi, _note = self._history[-1]
+            self.g1.set_instant(single)
+            self.g2.set_instant(multi)
+
+    def _run(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self.start.setEnabled(False)
+        self.progress.set_value(0.1, "")
+        kind = self.sidebar.currentItem().text() if self.sidebar.currentItem() else _BENCH_KINDS[0]
+        try:
+            if kind == "Processor":
+                single, multi, note = self._bench_cpu()
+                self.g1.max_value = max(800, single * 1.2)
+                self.g2.max_value = max(8, multi * 1.2)
+                self.g1.set_instant(single)
+                self.g2.set_instant(multi)
+                self._history.append((time.strftime("%Y-%m-%d %H:%M"), single, multi, note))
+            elif kind == "Graphics":
+                score = self._bench_gpu()
+                self.g1.max_value = max(1000, score * 1.2)
+                self.g1.set_instant(score)
+                self._history.append((time.strftime("%Y-%m-%d %H:%M"), score, 0.0, "gpu"))
+            elif kind == "Storage":
+                mbps = self._bench_disk()
+                self.g1.max_value = max(4000, mbps * 1.2)
+                self.g1.set_instant(mbps)
+                self._history.append((time.strftime("%Y-%m-%d %H:%M"), mbps, 0.0, "disk write MB/s"))
+            elif kind == "Network":
+                score = self._bench_internet()
+                self.g1.set_instant(score)
+                self._history.append((time.strftime("%Y-%m-%d %H:%M"), score, 0.0, "internet"))
+            else:
+                single, multi, note = self._bench_cpu()
+                disk = self._bench_disk()
+                net = self._bench_internet()
+                composite = single * 0.5 + multi * 200 + disk * 0.1 + net * 0.05
+                self.g1.max_value = max(1000, composite * 1.2)
+                self.g1.set_instant(composite)
+                self.g2.set_instant(multi)
+                self._history.append((time.strftime("%Y-%m-%d %H:%M"), composite, multi, f"cpu+disk+net {note}"))
+            self.progress.set_value(1.0, "Done")
+        finally:
+            self._running = False
+            self.start.setEnabled(True)
+            self._refresh_table()
+
+    def tick(self, dt: float = 1 / 60) -> None:
+        self.g1.tick(dt)
+        self.g2.tick(dt)
+        self.progress.tick(dt)
+
+    def _bench_cpu(self) -> tuple[float, float, str]:
+        t0 = time.perf_counter()
+        x = 0
+        for _ in range(8_000_000):
+            x = (x * 1664525 + 1013904223) & 0xFFFFFFFF
+        dt = max(1e-6, time.perf_counter() - t0)
+        single = 8.0 / dt
+        self.progress.set_value(0.45, "Multi…")
+        t0 = time.perf_counter()
+        n = os.cpu_count() or 4
+        from concurrent.futures import ThreadPoolExecutor
+
+        def work(_i: int) -> None:
+            y = 0
+            for _j in range(2_000_000):
+                y = (y * 1664525 + 1013904223) & 0xFFFFFFFF
+
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            list(ex.map(work, range(n)))
+        dtm = max(1e-6, time.perf_counter() - t0)
+        multi = (n * 2.0) / dtm / 1000.0
+        return single, multi, f"x={x}"
+
+    def _bench_gpu(self) -> float:
+        t0 = time.perf_counter()
+        data = [0.0] * 1_000_000
+        for i in range(len(data)):
+            data[i] = math.sin(i * 0.001) * math.cos(i * 0.002)
+        dt = max(1e-6, time.perf_counter() - t0)
+        return 500.0 / dt
+
+    def _bench_disk(self) -> float:
+        path = "/tmp/hbomb_score.bin"
+        payload = os.urandom(4 * 1024 * 1024)
+        t0 = time.perf_counter()
+        with open(path, "wb") as fh:
+            for _ in range(32):
+                fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        dt = max(1e-6, time.perf_counter() - t0)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return 128.0 / dt
+
+    def _bench_internet(self) -> float:
+        import urllib.request
+
+        t0 = time.perf_counter()
+        urllib.request.urlopen("https://example.com", timeout=5).read(64)
+        dt = time.perf_counter() - t0
+        return 1000.0 / max(dt, 0.01)
+
+
+class FlightRecorderPage(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._buf: deque[dict] = deque(maxlen=3600)
+        self._playing = False
+        self._i = 0
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Flight Recorder"))
+        row = QHBoxLayout()
+        self.cap = QPushButton("Capture")
+        self.play = QPushButton("Replay")
+        row.addWidget(self.cap)
+        row.addWidget(self.play)
+        row.addStretch()
+        lay.addLayout(row)
+        self.chart = TimeSeriesWidget()
+        lay.addWidget(self.chart, 1)
+        self.body = QLabel("Records CPU, mem, GPU, power, disk, net each structural tick.")
+        lay.addWidget(self.body)
+        self.cap.clicked.connect(self._toggle)
+        self.play.clicked.connect(self._replay)
+        self._on = False
+
+    def apply_theme(self, theme: Theme, visual: VisualState) -> None:
+        self.chart.theme = theme
+        self.chart.visual = visual
+
+    def _toggle(self) -> None:
+        self._on = not self._on
+        self.cap.setText("Stop" if self._on else "Capture")
+
+    def ingest(self, snap: Snapshot) -> None:
+        if not self._on:
+            return
+        self._buf.append(
+            {
+                "t": snap.timestamp,
+                "cpu": snap.cpu.overall.total * 100,
+                "mem": snap.memory.used_ratio * 100,
+                "gpu": snap.gpu.util * 100,
+                "power": snap.energy.watts or 0.0,
+            }
+        )
+        self.body.setText(f"{len(self._buf)} samples")
+
+    def _replay(self) -> None:
+        from hbomb.snapshot.history import LogHistory
+
+        cpu, mem, gpu = LogHistory(), LogHistory(), LogHistory()
+        for i, s in enumerate(self._buf):
+            cpu.push(s["t"], s["cpu"])
+            mem.push(s["t"], s["mem"])
+            gpu.push(s["t"], s["gpu"])
+        t = self.chart.theme
+        col = t.cpu if t else QColor("#3dff8a")
+        self.chart.set_series(
+            [
+                ("CPU", cpu, col),
+                ("Mem", mem, t.mem if t else QColor("#b07cff")),
+                ("GPU", gpu, t.gpu if t else QColor("#4da3ff")),
+            ]
+        )
+
+
+class _SettingsCard(QFrame):
+    def __init__(self, title: str, icon_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("settingsCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 14)
+        outer.setSpacing(10)
+        head = QHBoxLayout()
+        self._icon = QLabel()
+        self._icon.setFixedSize(18, 18)
+        lab = QLabel(title)
+        lab.setObjectName("settingsSection")
+        head.addWidget(self._icon)
+        head.addWidget(lab)
+        head.addStretch()
+        outer.addLayout(head)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(8)
+        outer.addLayout(self.body)
+        self._icon_name = icon_name
+
+    def apply_theme(self, theme: Theme) -> None:
+        pm = nav_icon(self._icon_name, theme.text, 16).pixmap(16, 16)
+        self._icon.setPixmap(pm)
+
+
+class _SettingsRow(QWidget):
+    def __init__(self, label: str, widget: QWidget, hint: str = "", parent=None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        row.addStretch()
+        row.addWidget(widget)
+        lay.addLayout(row)
+        if hint:
+            h = QLabel(hint)
+            h.setObjectName("settingsHint")
+            h.setWordWrap(True)
+            lay.addWidget(h)
+
+
+class ColorsPanel(QWidget):
+    """Color tuning controls — embedded in ColorsPage or used as a popup."""
+
+    changed = Signal()
+
+    def __init__(self, visual: VisualState, parent=None, *, popup: bool = False, embedded: bool = False) -> None:
+        flags = Qt.WindowType(0)
+        if popup:
+            flags = Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+        super().__init__(parent, flags)
+        self.visual = visual
+        self.setObjectName("colorsPanel")
+        if popup:
+            self.setFixedWidth(260)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0 if embedded else 12, 0 if embedded else 10, 0 if embedded else 12, 0 if embedded else 12)
+        lay.setSpacing(8)
+        if not embedded:
+            title = QLabel("Colors")
+            title.setObjectName("settingsSection")
+            lay.addWidget(title)
+        self.display = QComboBox()
+        self.display.addItems(["Color", "Green", "Amber", "White", "Blue", "Mono"])
+        mode_map = {"full": 0, "green": 1, "amber": 2, "white": 3, "blue": 4, "mono": 5}
+        self.display.setCurrentIndex(mode_map.get(visual.color_mode, 0))
+        self.ambiance = QComboBox()
+        self.ambiance.addItems([label for _key, label in AMBIANCE_CHOICES])
+        self.ambiance.setCurrentIndex(ambiance_index(visual.chrome))
+        self.sat = 
