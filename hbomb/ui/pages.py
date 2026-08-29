@@ -1,1 +1,1 @@
-LOAD_FROM_TMP_push_final
+LOAD_FROM_FILE
