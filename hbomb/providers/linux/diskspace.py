@@ -91,7 +91,6 @@ def build_tree(rows: list[tuple[str, int, bool]]) -> DiskNode:
     for node in nodes.values():
         if node.is_dir:
             node.size = 0
-    # roll up sizes from leaves
     def roll(n: DiskNode) -> int:
         if not n.is_dir:
             n.file_count = 1
@@ -119,7 +118,6 @@ def build_tree(rows: list[tuple[str, int, bool]]) -> DiskNode:
 
 
 def squarify(node: DiskNode, x: float, y: float, w: float, h: float) -> list[tuple[DiskNode, float, float, float, float]]:
-    """Squarified treemap rectangles (node, x, y, w, h)."""
     children = [c for c in node.children if c.size > 0]
     if not children or w <= 1 or h <= 1:
         return [(node, x, y, w, h)] if not children else []
@@ -135,13 +133,11 @@ def squarify(node: DiskNode, x: float, y: float, w: float, h: float) -> list[tup
         if s <= 0:
             return 1e18
         rmax = 0.0
-        rmin = 1e18
         for c in items:
             a = c.size / total * (w * h)
             side = s / length
             other = a / side if side else 0
             rmax = max(rmax, side / other if other else 1e18, other / side if side else 1e18)
-            rmin = min(rmin, side / other if other else 1e18)
         return rmax
 
     remaining = children[:]
