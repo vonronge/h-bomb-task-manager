@@ -91,6 +91,7 @@ def _drm() -> GpuSnapshot:
 
 
 def sample_npu() -> NpuSnapshot:
+    # Intel NPU / AMD XDNA appear under accel or drm; most desktops publish nothing.
     for path in (
         "/sys/class/accel/accel0/device/npu_busy_percent",
         "/sys/class/drm/card0/device/npu_busy_percent",
