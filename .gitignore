@@ -60,6 +60,7 @@ uv.lock
 
 # --- Screenshot / capture output ---
 *.png
+!docs/screenshots/*.png
 !resources/**/*.png
 
 # --- Compiled native extension (built by maturin on install) ---
